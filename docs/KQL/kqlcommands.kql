@@ -1,0 +1,282 @@
+
+.create-merge table AADUserAndGroupsRaw (records:dynamic)
+
+.alter-merge table AADUserAndGroupsRaw policy retention softdelete = 1d
+
+.alter table AADUserAndGroupsRaw policy caching hot = 1h
+
+.create-or-alter table AADUserAndGroupsRaw ingestion json mapping 'AADUserAndGroupsRawMapping' '[{"column":"records","Properties":{"path":"$"}}]'
+
+.create-merge table AADUser (
+    TimeGenerated: datetime,
+    Id: guid,
+    AccountEnabled: bool,
+    UserPrincipalName: string,
+    DisplayName: string,
+    GivenName: string,
+    Surname: string,
+    JobTitle: string,
+    Department: string,
+    CompanyName: string,
+    OfficeLocation: string,
+    PreferredLanguage: string,
+    LastPasswordChangeDateTime: datetime,
+    SignInSessionsValidFromDateTime: datetime,
+    CreationType: string,
+    ExternalUserState: string,
+    ExternalUserStateChangeDateTime: datetime,
+    IsManagementRestricted: string,
+    City: string,
+    State: string,
+    Country: string,
+    PostalCode: string,
+    StreetAddress: string,
+    Mail: string,
+    MailNickname: string,
+    OtherMails: string,
+    BusinessPhones: string,
+    MobilePhone: string,
+    FaxNumber: string,
+    UserType: string,
+    CreatedDateTime: datetime,
+    DeletedDateTime: datetime,
+    AgeGroup: string,
+    ConsentProvidedForMinor: string,
+    LegalAgeGroupClassification: string,
+    ImAddresses: string,
+    OnPremisesDistinguishedName: string,
+    OnPremisesDomainName: string,
+    OnPremisesImmutableId: string,
+    OnPremisesLastSyncDateTime: string,
+    OnPremisesSamAccountName: string,
+    OnPremisesSecurityIdentifier: string,
+    OnPremisesSyncEnabled: string,
+    OnPremisesUserPrincipalName: string,
+    OnPremisesExtensionAttributes: dynamic,
+    OnPremisesProvisioningErrors: string,
+    PasswordPolicies: string,
+    ProxyAddresses: string,
+    RefreshTokensValidFromDateTime: datetime,
+    ShowInAddressList: string,
+    UsageLocation: string,
+    PreferredDataLocation: string,
+    IsResourceAccount: string,
+    EmployeeId: string,
+    EmployeeType: string,
+    EmployeeHireDate: datetime,
+    EmployeeLeaveDateTime: datetime,
+    EmployeeOrgData: string,
+    AssignedLicenses: string,
+    AssignedPlans: string,
+    ProvisionedPlans: string,
+    LicenseAssignmentStates: string,
+    ServiceProvisioningErrors: string,
+    Identities: dynamic,
+    Type: string,
+    _TimeReceived: datetime
+    )
+
+
+.create-merge table AADGroup (
+    TimeGenerated: datetime,
+    Id: guid,
+    DisplayName: string,
+    PreferredLanguage: string,
+    DeletedDateTime: datetime,
+    CreatedDateTime: datetime,
+    SecurityIdentifier: string,
+    Mail: string,
+    MailNickname: string,
+    ProxyAddresses: string,
+    PreferredDataLocation: string,
+    AssignedLicenses: string,
+    ServiceProvisioningErrors: string,
+    OnPremisesDomainName: string,
+    OnPremisesLastSyncDateTime: string,
+    OnPremisesSamAccountName: string,
+    OnPremisesSecurityIdentifier: string,
+    OnPremisesSyncEnabled: string,
+    OnPremisesProvisioningErrors: string,
+    Classification: string,
+    CreationOptions: string,
+    Description: string,
+    ExpirationDateTime: string,
+    GroupTypes: string,
+    IsAssignableToRole: string,
+    MailEnabled: bool,
+    MembershipRule: string,
+    MembershipRuleProcessingState: string,
+    OnPremisesNetBiosName: string,
+    RenewedDateTime: datetime,
+    ResourceBehaviorOptions: string,
+    ResourceProvisioningOptions: string,
+    SecurityEnabled: bool,
+    Theme: string,
+    Visibility: string,
+    Type: string,
+    _TimeReceived: datetime
+    )
+
+
+
+.create-merge table AADGroupMember (
+    TimeGenerated: datetime,
+    GroupID: guid,
+    MemberType: string,
+    MemberUserPrincipalName: string,
+    MemberDisplayName: string,
+    MemberId: string,
+    Type: string,
+    _TimeReceived: datetime
+)
+
+
+
+.create-or-alter function AADUserExpand() {
+AADUserAndGroupsRaw
+| where tostring(records.OdataContext) == "users"
+| project 
+TimeGenerated = todatetime(records.ExportTimestamp),
+Id = toguid(records.Data.id),
+AccountEnabled = tobool(records.Data.accountEnabled),
+UserPrincipalName = tostring(records.Data.userPrincipalName),
+DisplayName = tostring(records.Data.displayName),
+GivenName = tostring(records.Data.givenName),
+Surname = tostring(records.Data.surname),
+JobTitle = tostring(records.Data.jobTitle),
+Department = tostring(records.Data.department),
+CompanyName = tostring(records.Data.companyName),
+OfficeLocation = tostring(records.Data.officeLocation),
+PreferredLanguage = tostring(records.Data.preferredLanguage),
+LastPasswordChangeDateTime = todatetime(records.Data.lastPasswordChangeDateTime),
+SignInSessionsValidFromDateTime = todatetime(records.Data.signInSessionsValidFromDateTime),
+CreationType = tostring(records.Data.creationType),
+ExternalUserState = tostring(records.Data.externalUserState),
+ExternalUserStateChangeDateTime = todatetime(records.Data.externalUserStateChangeDateTime),
+IsManagementRestricted = tostring(records.Data.isManagementRestricted),
+City = tostring(records.Data.city),
+State = tostring(records.Data.state),
+Country = tostring(records.Data.country),
+PostalCode = tostring(records.Data.postalCode),
+StreetAddress = tostring(records.Data.streetAddress),
+Mail = tostring(records.Data.mail),
+MailNickname = tostring(records.Data.mailNickname),
+OtherMails = tostring(records.Data.otherMails),
+BusinessPhones = tostring(records.Data.businessPhones),
+MobilePhone = tostring(records.Data.mobilePhone),
+FaxNumber = tostring(records.Data.faxNumber),
+UserType = tostring(records.Data.userType),
+CreatedDateTime = todatetime(records.Data.createdDateTime),
+DeletedDateTime = todatetime(records.Data.deletedDateTime),
+AgeGroup = tostring(records.Data.ageGroup),
+ConsentProvidedForMinor = tostring(records.Data.consentProvidedForMinor),
+LegalAgeGroupClassification = tostring(records.Data.legalAgeGroupClassification),
+ImAddresses = tostring(records.Data.imAddresses),
+OnPremisesDistinguishedName = tostring(records.Data.onPremisesDistinguishedName),
+OnPremisesDomainName = tostring(records.Data.onPremisesDomainName),
+OnPremisesImmutableId = tostring(records.Data.onPremisesImmutableId),
+OnPremisesLastSyncDateTime = tostring(records.Data.onPremisesLastSyncDateTime),
+OnPremisesSamAccountName = tostring(records.Data.onPremisesSamAccountName),
+OnPremisesSecurityIdentifier = tostring(records.Data.ageonPremisesSecurityIdentifierGroup),
+OnPremisesSyncEnabled = tostring(records.Data.onPremisesSyncEnabled),
+OnPremisesUserPrincipalName = tostring(records.Data.onPremisesUserPrincipalName),
+OnPremisesExtensionAttributes = todynamic(records.Data.onPremisesExtensionAttributes),
+OnPremisesProvisioningErrors = tostring(records.Data.onPremisesProvisioningErrors),
+PasswordPolicies = tostring(records.Data.passwordPolicies),
+ProxyAddresses = tostring(records.Data.proxyAddresses),
+RefreshTokensValidFromDateTime = todatetime(records.Data.refreshTokensValidFromDateTime),
+ShowInAddressList = tostring(records.Data.showInAddressList),
+UsageLocation = tostring(records.Data.usageLocation),
+PreferredDataLocation = tostring(records.Data.preferredDataLocation),
+IsResourceAccount = tostring(records.Data.isResourceAccount),
+EmployeeId = tostring(records.Data.employeeId),
+EmployeeType = tostring(records.Data.employeeType),
+EmployeeHireDate = todatetime(records.Data.employeeHireDate),
+EmployeeLeaveDateTime = todatetime(records.Data.employeeLeaveDateTime),
+EmployeeOrgData = tostring(records.Data.employeeOrgData),
+AssignedLicenses = tostring(records.Data.assignedLicenses),
+AssignedPlans = tostring(records.Data.assignedPlans),
+ProvisionedPlans = tostring(records.Data.provisionedPlans),
+LicenseAssignmentStates = tostring(records.Data.licenseAssignmentStates),
+ServiceProvisioningErrors = tostring(records.Data.serviceProvisioningErrors),
+Identities = todynamic(records.Data.identities),
+Type = tostring('AADAADUser'),
+_TimeReceived = todatetime(now())
+}
+
+
+.create-or-alter function AADGroupExpand() {
+AADUserAndGroupsRaw
+| where tostring(records.OdataContext) == "groups"
+| project 
+TimeGenerated = todatetime(records.ExportTimestamp),
+Id = toguid(records.Data.id),
+DisplayName =  tostring(records.Data.displayName),
+PreferredLanguage =  tostring(records.Data.preferredLanguage),
+DeletedDateTime = todatetime(records.Data.deletedDateTime),
+CreatedDateTime = todatetime(records.Data.createdDateTime),
+SecurityIdentifier = tostring(records.Data.securityIdentifier),
+Mail = tostring(records.Data.mail),
+MailNickname = tostring(records.Data.mailNickname),
+ProxyAddresses = tostring(records.Data.proxyAddresses),
+PreferredDataLocation = tostring(records.Data.preferredDataLocation),
+AssignedLicenses = tostring(records.Data.assignedLicenses),
+ServiceProvisioningErrors = tostring(records.Data.assignedLicenses),
+OnPremisesDomainName = tostring(records.Data.onPremisesDomainName),
+OnPremisesLastSyncDateTime = tostring(records.Data.onPremisesLastSyncDateTime),
+OnPremisesSamAccountName = tostring(records.Data.onPremisesSamAccountName),
+OnPremisesSecurityIdentifier = tostring(records.Data.onPremisesSecurityIdentifier),
+OnPremisesSyncEnabled = tostring(records.Data.onPremisesSyncEnabled),
+OnPremisesProvisioningErrors = tostring(records.Data.onPremisesProvisioningErrors),
+Classification = tostring(records.Data.classification),
+CreationOptions = tostring(records.Data.creationOptions),
+Description = tostring(records.Data.description),
+ExpirationDateTime = tostring(records.Data.expirationDateTime),
+GroupTypes = tostring(records.Data.groupTypes),
+IsAssignableToRole = tostring(records.Data.isAssignableToRole),
+MailEnabled = tobool(records.Data.mailEnabled),
+MembershipRule = tostring(records.Data.membershipRule),
+MembershipRuleProcessingState = tostring(records.Data.membershipRuleProcessingState),
+OnPremisesNetBiosName = tostring(records.Data.onPremisesNetBiosName),
+RenewedDateTime = todatetime(records.Data.renewedDateTime),
+ResourceBehaviorOptions = tostring(records.Data.resourceBehaviorOptions),
+ResourceProvisioningOptions = tostring(records.Data.resourceProvisioningOptions),
+SecurityEnabled = tobool(records.Data.securityEnabled),
+Theme = tostring(records.Data.theme),
+Visibility = tostring(records.Data.visibility),
+Type = tostring('AADGroup'),
+_TimeReceived = todatetime(now())
+}
+
+
+.create-or-alter function AADGroupMemberExpand() {
+    AADUserAndGroupsRaw
+    | where tostring(records.OdataContext) == "GroupMembers"
+    | project 
+    TimeGenerated = todatetime(records.ExportTimestamp),
+    GroupID = toguid(records.GroupID),
+    MemberType = tostring(records.Data.MemberType),
+    MemberUserPrincipalName = tostring(records.Data.MemberUserPrincipalName),
+    MemberDisplayName = tostring(records.Data.MemberDisplayName),
+    MemberId = tostring(records.Data.MemberId),
+    Type = tostring('AADGroupMember'),
+    _TimeReceived = todatetime(now())
+}
+
+
+.alter table AADUser policy update @'[{"Source": "AADUserAndGroupsRaw", "Query": "AADUserExpand()", "IsEnabled": "false", "IsTransactional": true}]'
+
+.alter table AADUser policy update @'[{"Source": "AADUserAndGroupsRaw", "Query": "AADUserExpand()", "IsEnabled": "true", "IsTransactional": true}]'
+
+
+.alter table AADGroup policy update @'[{"Source": "AADUserAndGroupsRaw", "Query": "AADGroupExpand()", "IsEnabled": "false", "IsTransactional": true}]'
+
+.alter table AADGroup policy update @'[{"Source": "AADUserAndGroupsRaw", "Query": "AADGroupExpand()", "IsEnabled": "true", "IsTransactional": true}]'
+
+
+
+.alter table AADGroupMember policy update @'[{"Source": "AADUserAndGroupsRaw", "Query": "AADGroupMemberExpand()", "IsEnabled": "false", "IsTransactional": true}]'
+
+.alter table AADGroupMember policy update @'[{"Source": "AADUserAndGroupsRaw", "Query": "AADGroupMemberExpand()", "IsEnabled": "true", "IsTransactional": true}]'
+
+
