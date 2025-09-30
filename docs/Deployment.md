@@ -1,771 +1,843 @@
 # Deployment Guide
 
-## 🚀 **Complete Deployment Instructions**
+Version 1.0  
+Last Modified: 2025-10-01
 
-This guide provides step-by-step instructions for deploying the AAD Export to ADX solution in your Azure environment.
+## 1. Prerequisites
 
----
+### 1.1 Azure Requirements
 
-## 📋 **Prerequisites**
-
-### **Azure Requirements**
-- Azure subscription with Contributor access
+- Azure subscription with Contributor role
 - Azure AD tenant with Global Administrator or equivalent
-- Resource group for deployment
-- Azure CLI or PowerShell installed locally
+- Resource group (existing or to be created)
+- Available quota for:
+  - 1 Function App (Consumption plan)
+  - 1 Storage Account (Standard LRS)
+  - 1 Application Insights instance
+  - 1 Event Hub namespace (existing)
+  - 1 User-assigned managed identity (existing)
 
-### **Local Development Tools**
-- PowerShell 7.0 or later
-- Azure Functions Core Tools v4
-- Git for source control
-- Visual Studio Code (recommended)
+### 1.2 Local Development Tools
 
-### **Permissions Required**
-- **Azure Subscription**: Contributor role
-- **Azure AD**: Ability to create and assign managed identities
-- **Resource Creation**: Function App, Event Hub, Storage Account, Application Insights
+**Required:**
 
----
+- PowerShell 7.4 or later
+- Azure CLI 2.50.0 or later, OR Azure PowerShell 10.0.0 or later
+- Azure Functions Core Tools 4.x
 
-## 🏗️ **Step-by-Step Deployment**
+**Optional:**
 
-### **Step 1: Create Azure Resources**
+- Visual Studio Code with Azure Functions extension
+- Git client
 
-#### **Option A: Using Azure CLI**
+### 1.3 Permissions Required
+
+**Azure Subscription:**
+
+- Contributor on resource group
+
+**Azure AD:**
+
+- Application Administrator (to grant API permissions)
+- Privileged Role Administrator (to assign managed identity permissions)
+
+## 2. Pre-Deployment Setup
+
+### 2.1 Create User-Assigned Managed Identity
+
 ```bash
-# Set variables
-$resourceGroup = "rg-aad-export"
-$location = "australiaeast"
-$functionAppName = "func-aad-export-prod"
-$storageAccountName = "staadexportprod"  # Must be globally unique
-$eventHubNamespace = "eh-aad-export"
-$eventHubName = "aad-data"
-$appInsightsName = "ai-aad-export"
-$managedIdentityName = "mi-aad-export"
+# Create managed identity
+az identity create \
+  --name aad-export-identity \
+  --resource-group your-rg \
+  --location australiaeast
 
-# Create resource group
-az group create --name $resourceGroup --location $location
+# Capture identity details
+IDENTITY_ID=$(az identity show \
+  --name aad-export-identity \
+  --resource-group your-rg \
+  --query id -o tsv)
 
-# Deploy infrastructure using Bicep
-az deployment group create \
-  --resource-group $resourceGroup \
-  --template-file infrastructure/main.bicep \
-  --parameters functionAppName=$functionAppName \
-               storageAccountName=$storageAccountName \
-               applicationInsightsName=$appInsightsName \
-               eventHubNamespace=$eventHubNamespace \
-               eventHubName=$eventHubName \
-               userAssignedIdentityResourceId="/subscriptions/{subscription-id}/resourceGroups/$resourceGroup/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$managedIdentityName"
+CLIENT_ID=$(az identity show \
+  --name aad-export-identity \
+  --resource-group your-rg \
+  --query clientId -o tsv)
+
+PRINCIPAL_ID=$(az identity show \
+  --name aad-export-identity \
+  --resource-group your-rg \
+  --query principalId -o tsv)
 ```
 
-#### **Option B: Using Azure PowerShell**
+### 2.2 Grant Microsoft Graph Permissions
+
+**Option A: Azure Portal**
+
+1. Navigate to Azure Active Directory → Enterprise Applications
+2. Search for the managed identity by client ID
+3. Select Permissions
+4. Add permissions:
+   - `User.Read.All` (Application)
+   - `Group.Read.All` (Application)
+   - `GroupMember.Read.All` (Application)
+5. Grant admin consent
+
+**Option B: PowerShell**
+
 ```powershell
-# Install required modules
-Install-Module -Name Az -Force -AllowClobber
-Install-Module -Name AzureAD -Force -AllowClobber
+# Connect to Microsoft Graph
+Connect-MgGraph -Scopes "Application.ReadWrite.All"
 
-# Connect to Azure
-Connect-AzAccount
-Connect-AzureAD
+# Get Graph service principal
+$graphSP = Get-MgServicePrincipal -Filter "displayName eq 'Microsoft Graph'"
 
-# Set deployment variables
-$resourceGroup = "rg-aad-export"
-$location = "Australia East"
-$subscriptionId = (Get-AzContext).Subscription.Id
+# Get managed identity service principal
+$managedIdentitySP = Get-MgServicePrincipal -Filter "displayName eq 'aad-export-identity'"
 
-# Create resource group
-New-AzResourceGroup -Name $resourceGroup -Location $location
-
-# Deploy using Bicep template
-New-AzResourceGroupDeployment `
-  -ResourceGroupName $resourceGroup `
-  -TemplateFile "infrastructure/main.bicep" `
-  -TemplateParameterFile "infrastructure/parameters.json"
-```
-
-### **Step 2: Configure Managed Identity Permissions**
-
-#### **Create and Assign Graph API Permissions**
-```powershell
-# Connect to Azure AD
-Connect-AzureAD
-
-# Get the managed identity
-$managedIdentityName = "mi-aad-export"
-$managedIdentity = Get-AzureADServicePrincipal -Filter "displayName eq '$managedIdentityName'"
-
-if (-not $managedIdentity) {
-    Write-Error "Managed Identity '$managedIdentityName' not found. Ensure infrastructure deployment completed successfully."
-    exit 1
-}
-
-# Microsoft Graph Service Principal (constant)
-$graphAppId = "00000003-0000-0000-c000-000000000000"
-$graphServicePrincipal = Get-AzureADServicePrincipal -Filter "appId eq '$graphAppId'"
-
-# Required permissions
-$requiredPermissions = @(
-    "User.Read.All",
-    "Group.Read.All",
-    "AuditLog.Read.All"
+# Define required permissions
+$permissions = @(
+    @{ Id = "df021288-bdef-4463-88db-98f22de89214"; Type = "Role" }  # User.Read.All
+    @{ Id = "5b567255-7703-4780-807c-7be8301ae99b"; Type = "Role" }  # Group.Read.All
+    @{ Id = "98830695-27a2-44f7-8c18-0c3ebc9698f6"; Type = "Role" }  # GroupMember.Read.All
 )
 
-foreach ($permission in $requiredPermissions) {
-    $appRole = $graphServicePrincipal.AppRoles | Where-Object {
-        $_.Value -eq $permission -and $_.AllowedMemberTypes -contains "Application"
-    }
-    
-    if ($appRole) {
-        try {
-            New-AzureADServiceAppRoleAssignment `
-                -ObjectId $managedIdentity.ObjectId `
-                -PrincipalId $managedIdentity.ObjectId `
-                -ResourceId $graphServicePrincipal.ObjectId `
-                -Id $appRole.Id
-            
-            Write-Host "✅ Successfully assigned $permission to Managed Identity" -ForegroundColor Green
-        }
-        catch {
-            Write-Warning "⚠️ Failed to assign $permission (may already exist): $_"
-        }
-    }
-    else {
-        Write-Error "❌ Could not find $permission role in Microsoft Graph"
-    }
+# Grant permissions
+foreach ($permission in $permissions) {
+    New-MgServicePrincipalAppRoleAssignment `
+        -ServicePrincipalId $managedIdentitySP.Id `
+        -PrincipalId $managedIdentitySP.Id `
+        -ResourceId $graphSP.Id `
+        -AppRoleId $permission.Id
 }
 ```
 
-### **Step 3: Configure Event Hub Permissions**
+### 2.3 Create Event Hub Resources
 
-#### **Assign Event Hub Roles**
-```powershell
-# Get managed identity resource ID
-$managedIdentityResourceId = "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$managedIdentityName"
+```bash
+# Create Event Hub namespace (if not existing)
+az eventhubs namespace create \
+  --name your-eh-namespace \
+  --resource-group your-rg \
+  --location australiaeast \
+  --sku Standard
 
-# Event Hub namespace resource ID
-$eventHubResourceId = "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.EventHub/namespaces/$eventHubNamespace"
+# Create Event Hub
+az eventhubs eventhub create \
+  --name aad-export \
+  --namespace-name your-eh-namespace \
+  --resource-group your-rg \
+  --partition-count 4 \
+  --message-retention 1
 
-# Assign Azure Event Hubs Data Sender role
-New-AzRoleAssignment `
-    -ObjectId $managedIdentity.ObjectId `
-    -RoleDefinitionName "Azure Event Hubs Data Sender" `
-    -Scope $eventHubResourceId
-
-Write-Host "✅ Event Hub permissions configured" -ForegroundColor Green
+# Grant managed identity access to Event Hub
+az role assignment create \
+  --assignee $PRINCIPAL_ID \
+  --role "Azure Event Hubs Data Sender" \
+  --scope "/subscriptions/{subscription-id}/resourceGroups/your-rg/providers/Microsoft.EventHub/namespaces/your-eh-namespace"
 ```
 
-### **Step 4: Deploy Function Code**
+**Note:** Role assignments can take up to 24 hours to propagate. Plan deployment accordingly.
 
-#### **Using Azure Functions Core Tools**
+## 3. Infrastructure Deployment
+
+### 3.1 Prepare Parameters File
+
+Copy example parameters:
+
 ```bash
-# Navigate to function app directory
+cp infrastructure/example.parameters.json infrastructure/parameters.json
+```
+
+Edit `infrastructure/parameters.json`:
+
+```json
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "functionAppName": {
+      "value": "func-aad-export-prod"
+    },
+    "storageAccountName": {
+      "value": "staadexportprod"
+    },
+    "userAssignedIdentityResourceId": {
+      "value": "/subscriptions/{sub-id}/resourceGroups/{rg}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/aad-export-identity"
+    },
+    "applicationInsightsName": {
+      "value": "appi-aad-export-prod"
+    },
+    "eventHubNamespace": {
+      "value": "your-eh-namespace"
+    },
+    "eventHubName": {
+      "value": "aad-export"
+    },
+    "resourceGroupID": {
+      "value": "/subscriptions/{sub-id}/resourceGroups/{rg}"
+    }
+  }
+}
+```
+
+**Naming Constraints:**
+
+- Function App name: 2-60 characters, alphanumeric and hyphens, globally unique
+- Storage account name: 3-24 characters, lowercase alphanumeric only, globally unique
+- Application Insights name: 1-260 characters
+
+### 3.2 Validate Deployment
+
+```bash
+az deployment group validate \
+  --resource-group your-rg \
+  --template-file infrastructure/main.bicep \
+  --parameters @infrastructure/parameters.json
+```
+
+### 3.3 Deploy Infrastructure
+
+```bash
+az deployment group create \
+  --resource-group your-rg \
+  --template-file infrastructure/main.bicep \
+  --parameters @infrastructure/parameters.json \
+  --name "aad-export-deployment-$(date +%Y%m%d-%H%M%S)"
+```
+
+Deployment typically completes in 2-5 minutes.
+
+### 3.4 Verify Infrastructure
+
+```bash
+# List created resources
+az resource list \
+  --resource-group your-rg \
+  --output table
+
+# Verify Function App configuration
+az functionapp config appsettings list \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  --output table
+```
+
+## 4. Code Deployment
+
+### 4.1 Option A: Azure Functions Core Tools
+
+**From project root:**
+
+```bash
 cd src/FunctionApp
 
-# Install Azure Functions Core Tools (if not installed)
-npm install -g azure-functions-core-tools@4 --unsafe-perm true
-
-# Login to Azure
-func azure account set --subscription-id $subscriptionId
-
-# Deploy function code
-func azure functionapp publish $functionAppName --powershell
-
-# Verify deployment
-func azure functionapp list-functions $functionAppName
+# Deploy
+func azure functionapp publish func-aad-export-prod
 ```
 
-#### **Alternative: Manual Deployment via Portal**
-1. Open Azure Portal → Function Apps → [Your Function App]
-2. Go to **Deployment Center**
-3. Choose **External Git** or **Local Git**
-4. Configure repository URL: `https://github.com/your-org/AAD-UserAndGroupExporttoADX.git`
-5. Set branch to `main` and build provider to **App Service Build Service**
-6. Save configuration and trigger deployment
+**Expected output:**
 
-### **Step 5: Configure Application Settings**
+```
+Getting site publishing info...
+Preparing archive...
+Uploading 2.45 MB
+Upload completed successfully.
+Deployment completed successfully.
+Syncing triggers...
+Functions in func-aad-export-prod:
+    HttpTriggerFunction - [httpTrigger]
+        Invoke url: https://func-aad-export-prod.azurewebsites.net/api/HttpTriggerFunction
+
+    TimerTriggerFunction - [timerTrigger]
+        Schedule: 0 0 1 * * *
+```
+
+### 4.2 Option B: Deployment Script
+
+**From project root:**
 
 ```powershell
-# Get managed identity client ID
-$managedIdentity = Get-AzUserAssignedIdentity -ResourceGroupName $resourceGroup -Name $managedIdentityName
-$clientId = $managedIdentity.ClientId
-
-# Configure function app environment variables
-$appSettings = @(
-    "EVENTHUBNAMESPACE=$eventHubNamespace",
-    "EVENTHUB=$eventHubName", 
-    "CLIENTID=$clientId"
-)
-
-# Apply settings using Azure CLI
-foreach ($setting in $appSettings) {
-    az functionapp config appsettings set `
-      --resource-group $resourceGroup `
-      --name $functionAppName `
-      --settings $setting
-}
-
-Write-Host "✅ Application settings configured" -ForegroundColor Green
+.\deploy.ps1 `
+  -FunctionAppName "func-aad-export-prod" `
+  -ResourceGroup "your-rg"
 ```
 
----
+The script:
 
-## 🧪 **Post-Deployment Testing**
+1. Validates local PowerShell version
+2. Checks Function App exists
+3. Packages code
+4. Deploys to Azure
+5. Verifies deployment
+6. Displays function URLs
 
-### **Test 1: Managed Identity Authentication**
-```powershell
-# Test from Function App's Kudu console
-# Navigate to: https://[function-app-name].scm.azurewebsites.net/DebugConsole
+### 4.3 Option C: CI/CD Pipeline
 
-# Test Graph API access
-$headers = @{
-    'Metadata' = 'true'
-    'X-IDENTITY-HEADER' = $env:IDENTITY_HEADER
-}
+**GitHub Actions workflow:**
 
-$tokenUrl = "$($env:IDENTITY_ENDPOINT)?resource=https://graph.microsoft.com&client_id=$($env:CLIENTID)&api-version=2019-08-01"
-$tokenResponse = Invoke-RestMethod -Uri $tokenUrl -Headers $headers -Method GET
+```yaml
+name: Deploy Function App
 
-if ($tokenResponse.access_token) {
-    Write-Host "✅ Managed Identity authentication successful" -ForegroundColor Green
-} else {
-    Write-Error "❌ Managed Identity authentication failed"
-}
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  AZURE_FUNCTIONAPP_NAME: func-aad-export-prod
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: 'src/FunctionApp'
+
+jobs:
+  deploy:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup PowerShell
+        uses: azure/powershell@v1
+        with:
+          azPSVersion: 'latest'
+
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy Function App
+        run: |
+          cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          func azure functionapp publish ${{ env.AZURE_FUNCTIONAPP_NAME }}
 ```
 
-### **Test 2: HTTP Trigger Execution**
+## 5. Post-Deployment Verification
+
+### 5.1 Check Function App Health
+
 ```bash
-# Get function URL and key
-$functionKey = $(az functionapp keys list --resource-group $resourceGroup --name $functionAppName --query "functionKeys.default" -o tsv)
-$httpTriggerUrl = "https://$functionAppName.azurewebsites.net/api/HttpTriggerFunction?code=$functionKey"
+# Get Function App status
+az functionapp show \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  --query "state" -o tsv
 
-# Execute test
-$response = Invoke-RestMethod -Uri $httpTriggerUrl -Method POST -ContentType "application/json"
-
-# Check response
-if ($response.statusCode -eq 202) {
-    Write-Host "✅ HTTP Trigger test successful" -ForegroundColor Green
-    Write-Host "Response: $($response.body | ConvertTo-Json)"
-} else {
-    Write-Error "❌ HTTP Trigger test failed"
-}
+# Expected: Running
 ```
 
-### **Test 3: Timer Trigger Schedule**
-```bash
-# Verify timer trigger configuration
-az functionapp function show \
-  --resource-group $resourceGroup \
-  --name $functionAppName \
-  --function-name TimerTriggerFunction \
-  --query "config.bindings[0].schedule" -o tsv
+### 5.2 Verify Module Loading
 
-# Should return: "0 0 1 * * *" (daily at 1 AM)
-```
+Navigate to Function App in Azure Portal:
 
-### **Test 4: Event Hub Data Flow**
+1. Select "Console" under Development Tools
+2. Run:
+
 ```powershell
-# Monitor Event Hub activity
-az eventhubs eventhub show \
-  --resource-group $resourceGroup \
-  --namespace-name $eventHubNamespace \
-  --name $eventHubName \
-  --query "messageRetentionInDays"
+Get-Module -ListAvailable AADExporter
+```
 
+Expected output showing module version 3.0.
+
+### 5.3 Test HTTP Trigger
+
+```bash
+# Get function key
+FUNCTION_KEY=$(az functionapp keys list \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  --query "functionKeys.default" -o tsv)
+
+# Invoke function
+curl -X POST \
+  "https://func-aad-export-prod.azurewebsites.net/api/HttpTriggerFunction?code=$FUNCTION_KEY" \
+  -H "Content-Type: application/json"
+```
+
+Expected: HTTP 200 with export statistics.
+
+### 5.4 Monitor Execution
+
+**Application Insights:**
+
+```bash
+# Get Application Insights instrumentation key
+AI_KEY=$(az monitor app-insights component show \
+  --app appi-aad-export-prod \
+  --resource-group your-rg \
+  --query "instrumentationKey" -o tsv)
+```
+
+Navigate to Application Insights in portal and check:
+
+- Live Metrics Stream (real-time monitoring)
+- Failures (any errors during execution)
+- Performance (execution duration)
+- Custom Events (AADExportStarted, AADExportCompleted)
+
+### 5.5 Verify Event Hub Delivery
+
+```bash
 # Check Event Hub metrics
 az monitor metrics list \
-  --resource "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.EventHub/namespaces/$eventHubNamespace" \
+  --resource "/subscriptions/{sub-id}/resourceGroups/your-rg/providers/Microsoft.EventHub/namespaces/your-eh-namespace/eventhubs/aad-export" \
   --metric "IncomingMessages" \
-  --interval PT1H
+  --start-time $(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ) \
+  --interval PT1M \
+  --output table
 ```
 
----
+Expected: Non-zero incoming messages after function execution.
 
-## 📊 **Monitoring & Alerting Setup**
+## 6. Configuration Adjustments
 
-### **Application Insights Configuration**
+### 6.1 Modify Timer Schedule
 
-#### **Create Custom Dashboard**
-```powershell
-# Application Insights workspace ID
-$appInsightsId = "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.Insights/components/$appInsightsName"
+Edit `src/FunctionApp/TimerTriggerFunction/function.json`:
 
-# Create monitoring queries
-$queries = @{
-    "FunctionExecutions" = "traces | where message contains 'Function Invoked' | summarize count() by bin(timestamp, 1h)"
-    "ErrorAnalysis" = "exceptions | summarize count() by problemId, outerMessage | top 10 by count_"
-    "GraphAPILatency" = "dependencies | where type == 'Http' and target contains 'graph.microsoft.com' | summarize avg(duration) by bin(timestamp, 1h)"
-    "EventHubThroughput" = "traces | where message contains 'sending to event hub' | summarize count() by bin(timestamp, 5m)"
-}
-```
-
-#### **Alert Rules**
-```bash
-# Function failure alert
-az monitor metrics alert create \
-  --name "AAD-Export-Function-Failures" \
-  --resource-group $resourceGroup \
-  --scopes $appInsightsId \
-  --condition "count exceptions > 0" \
-  --description "Alert when AAD export function encounters errors" \
-  --evaluation-frequency 5m \
-  --window-size 15m
-
-# Long execution time alert  
-az monitor metrics alert create \
-  --name "AAD-Export-Long-Execution" \
-  --resource-group $resourceGroup \
-  --scopes $appInsightsId \
-  --condition "avg duration > PT30M" \
-  --description "Alert when function execution exceeds 30 minutes" \
-  --evaluation-frequency 5m \
-  --window-size 15m
-```
-
-### **Log Analytics Queries**
-
-#### **Function Performance**
-```kusto
-// Function execution summary
-traces
-| where message contains "Function Invoked"
-| extend TriggerType = case(
-    message contains "HTTP", "HTTP",
-    message contains "Timer", "Timer", 
-    "Unknown"
-)
-| summarize 
-    ExecutionCount = count(),
-    AvgDuration = avg(todouble(customDimensions.Duration))
-  by TriggerType, bin(timestamp, 1d)
-| render timechart
-```
-
-#### **Error Analysis**
-```kusto
-// Detailed error breakdown
-exceptions
-| extend 
-    ErrorType = case(
-        outerMessage contains "401", "Authentication",
-        outerMessage contains "429", "Rate Limit",
-        outerMessage contains "timeout", "Timeout",
-        "Other"
-    )
-| summarize count() by ErrorType, bin(timestamp, 1h)
-| render columnchart
-```
-
----
-
-## 🔄 **Environment Management**
-
-### **Development Environment**
-
-#### **Local Development Setup**
-```powershell
-# Clone repository
-git clone https://github.com/your-org/AAD-UserAndGroupExporttoADX.git
-cd AAD-UserAndGroupExporttoADX
-
-# Install Azure Functions Core Tools
-npm install -g azure-functions-core-tools@4
-
-# Configure local settings
-# Create local.settings.json (not committed to source control)
-@{
-    "IsEncrypted" = $false
-    "Values" = @{
-        "AzureWebJobsStorage" = "DefaultEndpointsProtocol=https;AccountName=devstorageaccount001;AccountKey=..."
-        "FUNCTIONS_WORKER_RUNTIME" = "powershell"
-        "EVENTHUBNAMESPACE" = "eh-aad-export-dev"
-        "EVENTHUB" = "aad-data-dev"
-        "CLIENTID" = "dev-managed-identity-client-id"
-    }
-} | ConvertTo-Json | Out-File -FilePath "src/FunctionApp/local.settings.json"
-
-# Start local development
-cd src/FunctionApp
-func start --powershell
-```
-
-### **Production Environment**
-
-#### **Environment Configuration**
-| Setting | Development | Production | Description |
-|---------|-------------|------------|-------------|
-| `EVENTHUBNAMESPACE` | `eh-aad-export-dev` | `eh-aad-export-prod` | Event Hub namespace |
-| `EVENTHUB` | `aad-data-dev` | `aad-data-prod` | Event Hub name |
-| `CLIENTID` | `dev-client-id` | `prod-client-id` | Managed identity client ID |
-| **Logging Level** | `Debug` | `Information` | Application Insights verbosity |
-| **Function Timeout** | `00:10:00` | `04:00:00` | Maximum execution time |
-
----
-
-## 🔧 **Configuration Management**
-
-### **Application Settings Management**
-```powershell
-# Function to update app settings
-function Set-FunctionAppSettings {
-    param(
-        [string]$ResourceGroupName,
-        [string]$FunctionAppName,
-        [hashtable]$Settings
-    )
-    
-    foreach ($setting in $Settings.GetEnumerator()) {
-        az functionapp config appsettings set \
-          --resource-group $ResourceGroupName \
-          --name $FunctionAppName \
-          --settings "$($setting.Key)=$($setting.Value)" \
-          --output none
-        
-        Write-Host "✅ Set $($setting.Key)" -ForegroundColor Green
-    }
-}
-
-# Production settings
-$prodSettings = @{
-    "EVENTHUBNAMESPACE" = "eh-aad-export-prod"
-    "EVENTHUB" = "aad-data-prod"
-    "CLIENTID" = "prod-managed-identity-client-id"
-    "WEBSITE_TIME_ZONE" = "AUS Eastern Standard Time"
-}
-
-Set-FunctionAppSettings -ResourceGroupName $resourceGroup -FunctionAppName $functionAppName -Settings $prodSettings
-```
-
-### **Timer Schedule Configuration**
 ```json
 {
   "bindings": [
     {
-      "name": "myTimer",
-      "type": "timerTrigger", 
+      "name": "Timer",
+      "type": "timerTrigger",
       "direction": "in",
-      "schedule": "0 0 1 * * *"
+      "schedule": "0 30 2 * * *"
     }
   ]
 }
 ```
 
-**Schedule Format**: `{second} {minute} {hour} {day} {month} {day-of-week}`
-- `0 0 1 * * *` = Daily at 1:00 AM UTC
-- `0 30 2 * * *` = Daily at 2:30 AM UTC
-- `0 0 9 * * MON` = Every Monday at 9:00 AM UTC
+Common schedules:
 
----
+- `0 0 1 * * *` - Daily at 01:00 UTC
+- `0 0 */6 * * *` - Every 6 hours
+- `0 0 1 * * 1` - Weekly on Monday at 01:00 UTC
 
-## 🧪 **Post-Deployment Testing**
+Redeploy after changes.
 
-### **Test 1: End-to-End Functionality**
-```powershell
-# Complete test script
-function Test-AADExportDeployment {
-    param(
-        [string]$ResourceGroupName,
-        [string]$FunctionAppName,
-        [string]$EventHubNamespace
-    )
-    
-    Write-Host "🧪 Starting deployment validation..." -ForegroundColor Cyan
-    
-    # Test 1: Function App accessibility
-    try {
-        $functionApp = Get-AzFunctionApp -ResourceGroupName $ResourceGroupName -Name $FunctionAppName
-        Write-Host "✅ Function App accessible" -ForegroundColor Green
-    }
-    catch {
-        Write-Error "❌ Function App not accessible: $_"
-        return $false
-    }
-    
-    # Test 2: HTTP trigger execution
-    try {
-        $functionKey = (Get-AzFunctionAppKey -ResourceGroupName $ResourceGroupName -Name $FunctionAppName -KeyName "default").Value
-        $httpUrl = "https://$FunctionAppName.azurewebsites.net/api/HttpTriggerFunction?code=$functionKey"
-        
-        $response = Invoke-RestMethod -Uri $httpUrl -Method POST -TimeoutSec 300
-        
-        if ($response.statusCode -eq 202) {
-            Write-Host "✅ HTTP Trigger execution successful" -ForegroundColor Green
-        }
-    }
-    catch {
-        Write-Error "❌ HTTP Trigger test failed: $_"
-        return $false
-    }
-    
-    # Test 3: Event Hub message delivery
-    Start-Sleep -Seconds 30  # Allow time for processing
-    
-    $ehMetrics = az monitor metrics list \
-      --resource "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.EventHub/namespaces/$EventHubNamespace" \
-      --metric "IncomingMessages" \
-      --interval PT5M | ConvertFrom-Json
-    
-    if ($ehMetrics.value.timeseries.data.Count -gt 0) {
-        Write-Host "✅ Event Hub receiving messages" -ForegroundColor Green
-    }
-    
-    Write-Host "🎉 Deployment validation complete!" -ForegroundColor Green
-    return $true
-}
+### 6.2 Adjust Function Timeout
 
-# Run validation
-Test-AADExportDeployment -ResourceGroupName $resourceGroup -FunctionAppName $functionAppName -EventHubNamespace $eventHubNamespace
-```
+Edit `src/FunctionApp/host.json`:
 
-### **Test 2: Data Quality Validation**
-```kusto
-// Query ADX to verify data ingestion
-.show ingestion failures 
-| where Table in ("Users", "Groups", "GroupMembers")
-| where IngestionSourceId contains "aad-export"
-
-// Verify data freshness
-Users 
-| summarize max(ingestion_time())
-| extend DataAge = now() - max_ingestion_time_
-| project DataAge
-
-// Sample data validation
-Users
-| take 10
-| project displayName, userPrincipalName, department, accountEnabled
-```
-
----
-
-## 🔄 **Deployment Automation**
-
-### **CI/CD Pipeline Setup**
-
-#### **GitHub Actions Workflow**
-```yaml
-# .github/workflows/deploy.yml
-name: Deploy AAD Export Function
-
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-env:
-  AZURE_FUNCTIONAPP_NAME: func-aad-export-prod
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: './src/FunctionApp'
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup PowerShell
-      uses: azure/powershell@v1
-      with:
-        inlineScript: |
-          Install-Module -Name Az.Functions -Force
-        azPSVersion: "latest"
-    
-    - name: Login to Azure
-      uses: azure/login@v1
-      with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
-    
-    - name: Deploy Function App
-      run: |
-        func azure functionapp publish ${{ env.AZURE_FUNCTIONAPP_NAME }} --powershell
-      working-directory: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-```
-
-#### **Azure DevOps Pipeline**
-```yaml
-# azure-pipelines.yml
-trigger:
-- main
-
-pool:
-  vmImage: 'ubuntu-latest'
-
-variables:
-  functionAppName: 'func-aad-export-prod'
-  resourceGroupName: 'rg-aad-export'
-
-stages:
-- stage: Deploy
-  jobs:
-  - job: DeployFunction
-    steps:
-    - task: AzureFunctionApp@1
-      inputs:
-        azureSubscription: 'Azure-Service-Connection'
-        appType: 'functionApp'
-        appName: '$(functionAppName)'
-        package: 'src/FunctionApp'
-        runtimeStack: 'powershell'
-```
-
----
-
-## 🛠️ **Troubleshooting**
-
-### **Common Deployment Issues**
-
-#### **Issue 1: Managed Identity Permission Denied**
-```
-Error: 401 Unauthorized when calling Graph API
-```
-**Solution**:
-```powershell
-# Verify managed identity has correct permissions
-$managedIdentity = Get-AzureADServicePrincipal -Filter "displayName eq 'mi-aad-export'"
-Get-AzureADServiceAppRoleAssignment -ObjectId $managedIdentity.ObjectId
-
-# Re-assign permissions if missing
-# [Follow Step 2 permission assignment]
-```
-
-#### **Issue 2: Function Timeout**
-```
-Error: Function execution timeout after 4 hours
-```
-**Solution**:
 ```json
-// Increase timeout in host.json
 {
-  "functionTimeout": "08:00:00"  // 8 hours maximum
+  "functionTimeout": "00:15:00"
 }
 ```
 
-#### **Issue 3: Event Hub Connection Failure**
+Maximum values by plan:
+
+- Consumption: 10 minutes (default: 5 minutes)
+- Premium: Unlimited (default: 30 minutes)
+- Dedicated: Unlimited (default: 30 minutes)
+
+### 6.3 Enable Extended User Properties
+
+Update environment variable:
+
+```bash
+az functionapp config appsettings set \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  --settings "INCLUDE_EXTENDED_PROPERTIES=true"
 ```
-Error: Event Hub authentication failed
-```
-**Solution**:
+
+Modify timer trigger to pass parameter:
+
 ```powershell
-# Verify Event Hub role assignment
-Get-AzRoleAssignment -ObjectId $managedIdentity.ObjectId -Scope $eventHubResourceId
-
-# Re-assign if missing
-New-AzRoleAssignment -ObjectId $managedIdentity.ObjectId -RoleDefinitionName "Azure Event Hubs Data Sender" -Scope $eventHubResourceId
+# In run.ps1
+$exportResult = Invoke-AADDataExport `
+  -TriggerContext "TimerTrigger" `
+  -IncludeExtendedUserProperties:$([bool]::Parse($env:INCLUDE_EXTENDED_PROPERTIES))
 ```
 
-### **Diagnostic Queries**
+## 7. Scaling Considerations
 
-#### **Function Health Check**
-```kusto
-// Function execution status
-traces
-| where timestamp > ago(24h)
-| where message contains "Function Invoked" or message contains "Export Complete"
-| summarize count() by message, bin(timestamp, 1h)
-| render timechart
+### 7.1 Upgrade to Premium Plan
+
+For large tenants (>50,000 users):
+
+```bash
+# Create Premium plan
+az functionapp plan create \
+  --name plan-aad-export-premium \
+  --resource-group your-rg \
+  --location australiaeast \
+  --sku EP1 \
+  --is-linux false
+
+# Update Function App to use Premium plan
+az functionapp update \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  --plan plan-aad-export-premium
 ```
 
-#### **Performance Analysis**
-```kusto
-// Execution duration tracking
-dependencies
-| where timestamp > ago(24h)
-| where type == "Http"
-| extend ApiEndpoint = case(
-    target contains "graph.microsoft.com/beta/users", "Users API",
-    target contains "graph.microsoft.com/beta/groups", "Groups API", 
-    target contains "servicebus.windows.net", "Event Hub",
-    "Other"
-)
-| summarize 
-    RequestCount = count(),
-    AvgDuration = avg(duration),
-    MaxDuration = max(duration)
-  by ApiEndpoint
-| order by RequestCount desc
+### 7.2 Increase Event Hub Throughput
+
+```bash
+# Increase partition count
+az eventhubs eventhub update \
+  --name aad-export \
+  --namespace-name your-eh-namespace \
+  --resource-group your-rg \
+  --partition-count 8
+
+# Upgrade namespace SKU
+az eventhubs namespace update \
+  --name your-eh-namespace \
+  --resource-group your-rg \
+  --sku Premium \
+  --capacity 2
 ```
 
----
+### 7.3 Enable VNet Integration
 
-## 🔄 **Maintenance & Updates**
+For enhanced security:
 
-### **Regular Maintenance Tasks**
+```bash
+# Create VNet and subnet
+az network vnet create \
+  --name vnet-functions \
+  --resource-group your-rg \
+  --address-prefix 10.0.0.0/16 \
+  --subnet-name subnet-functions \
+  --subnet-prefix 10.0.1.0/24
 
-#### **Monthly**
-- [ ] Review Application Insights metrics and alerts
-- [ ] Check Event Hub message retention and throughput
-- [ ] Validate ADX data ingestion and quality
-- [ ] Update PowerShell modules if needed
+# Enable VNet integration
+az functionapp vnet-integration add \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  --vnet vnet-functions \
+  --subnet subnet-functions
+```
 
-#### **Quarterly**
-- [ ] Review and rotate function keys
-- [ ] Audit managed identity permissions
-- [ ] Performance optimization review
-- [ ] Security assessment
+## 8. Security Hardening
 
-#### **Annually**
-- [ ] Review Graph API permission requirements
-- [ ] Update Azure Functions runtime version
-- [ ] Infrastructure cost optimization
-- [ ] Disaster recovery testing
+### 8.1 Disable Public Access
 
-### **Update Procedure**
+```bash
+# Enable private endpoints
+az functionapp update \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  --set publicNetworkAccess=Disabled
+```
+
+### 8.2 Enable Managed Identity for Storage
+
+Remove storage account keys from configuration:
+
+```bash
+az functionapp config appsettings delete \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  --setting-names "AzureWebJobsStorage" "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING"
+
+# Grant managed identity access to storage
+STORAGE_ID=$(az storage account show \
+  --name staadexportprod \
+  --resource-group your-rg \
+  --query id -o tsv)
+
+az role assignment create \
+  --assignee $PRINCIPAL_ID \
+  --role "Storage Blob Data Owner" \
+  --scope $STORAGE_ID
+
+# Update Function App to use managed identity
+az functionapp config appsettings set \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  --settings "AzureWebJobsStorage__accountName=staadexportprod"
+```
+
+### 8.3 Implement IP Restrictions
+
+```bash
+az functionapp config access-restriction add \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  --rule-name "AllowCorporateNetwork" \
+  --priority 100 \
+  --action Allow \
+  --ip-address "203.0.113.0/24"
+```
+
+## 9. Monitoring Setup
+
+### 9.1 Create Alert Rules
+
+**Export Failure Alert:**
+
+```bash
+az monitor metrics alert create \
+  --name "AAD Export Failed" \
+  --resource-group your-rg \
+  --scopes "/subscriptions/{sub-id}/resourceGroups/your-rg/providers/Microsoft.Insights/components/appi-aad-export-prod" \
+  --condition "count customEvents where name == 'AADExportFailed' > 0" \
+  --window-size 5m \
+  --evaluation-frequency 5m \
+  --action-group alert-action-group
+```
+
+**Long Execution Duration Alert:**
+
+```bash
+az monitor metrics alert create \
+  --name "AAD Export Slow" \
+  --resource-group your-rg \
+  --scopes "/subscriptions/{sub-id}/resourceGroups/your-rg/providers/Microsoft.Web/sites/func-aad-export-prod" \
+  --condition "avg FunctionExecutionTime > 480000" \
+  --window-size 5m \
+  --evaluation-frequency 5m
+```
+
+### 9.2 Configure Log Analytics
+
+```bash
+# Create Log Analytics workspace
+az monitor log-analytics workspace create \
+  --workspace-name law-aad-export \
+  --resource-group your-rg \
+  --location australiaeast
+
+# Link Application Insights
+az monitor app-insights component update \
+  --app appi-aad-export-prod \
+  --resource-group your-rg \
+  --workspace "/subscriptions/{sub-id}/resourceGroups/your-rg/providers/Microsoft.OperationalInsights/workspaces/law-aad-export"
+```
+
+### 9.3 Create Dashboard
+
+Import dashboard template from `infrastructure/dashboard.json` (if provided) or create custom dashboard with:
+
+- Export success rate over time
+- Average execution duration
+- Record counts by type (users, groups, memberships)
+- Error frequency
+- Event Hub throughput
+
+## 10. Backup and Disaster Recovery
+
+### 10.1 Export Function App Configuration
+
+```bash
+# Export app settings
+az functionapp config appsettings list \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  > backup/appsettings-$(date +%Y%m%d).json
+
+# Export ARM template
+az group export \
+  --name your-rg \
+  --resource-ids "/subscriptions/{sub-id}/resourceGroups/your-rg/providers/Microsoft.Web/sites/func-aad-export-prod" \
+  > backup/function-app-$(date +%Y%m%d).json
+```
+
+### 10.2 Secondary Region Deployment
+
+Deploy to secondary region for disaster recovery:
+
+```bash
+# Deploy infrastructure to secondary region
+az deployment group create \
+  --resource-group your-rg-secondary \
+  --template-file infrastructure/main.bicep \
+  --parameters @infrastructure/parameters-secondary.json
+
+# Deploy code
+func azure functionapp publish func-aad-export-prod-secondary
+```
+
+Configure Traffic Manager or Front Door for automatic failover.
+
+## 11. Troubleshooting Deployment Issues
+
+### 11.1 Permission Propagation Delays
+
+**Symptom:** 401/403 errors immediately after deployment
+
+**Solution:**
+
+- Microsoft Graph permissions can take up to 24 hours to propagate
+- Event Hub role assignments can take up to 30 minutes
+- Wait required duration or use service principal with immediate effect
+
+### 11.2 Module Loading Failures
+
+**Symptom:** "Invoke-AADDataExport command not found"
+
+**Solution:**
+
 ```powershell
-# Safe update process
-1. Stop-AzFunctionApp -ResourceGroupName $resourceGroup -Name $functionAppName
-2. # Deploy new code
-   func azure functionapp publish $functionAppName --powershell
-3. # Test in staging slot if available
-4. Start-AzFunctionApp -ResourceGroupName $resourceGroup -Name $functionAppName
-5. # Monitor for 24 hours
+# Verify module files deployed
+Get-ChildItem D:\home\site\wwwroot\modules -Recurse
+
+# Check profile.ps1 executes
+Get-Content D:\home\site\wwwroot\profile.ps1
+
+# Manually load module
+Import-Module D:\home\site\wwwroot\modules\AADExporter.psm1 -Force -Verbose
 ```
 
----
+### 11.3 Storage Account Access Issues
 
-## 📋 **Deployment Checklist**
+**Symptom:** "Storage account connection failed"
 
-### **Pre-Deployment**
+**Solution:**
+
+```bash
+# Verify storage account exists
+az storage account show --name staadexportprod
+
+# Regenerate keys
+az storage account keys renew \
+  --account-name staadexportprod \
+  --key primary
+
+# Update Function App settings
+az functionapp config appsettings set \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  --settings "AzureWebJobsStorage=DefaultEndpointsProtocol=https;AccountName=staadexportprod;AccountKey={new-key}"
+```
+
+### 11.4 Event Hub Connection Failures
+
+**Symptom:** "Event Hub transmission failed - 401 unauthorised"
+
+**Solution:**
+
+```bash
+# Verify role assignment
+az role assignment list \
+  --assignee $PRINCIPAL_ID \
+  --scope "/subscriptions/{sub-id}/resourceGroups/your-rg/providers/Microsoft.EventHub/namespaces/your-eh-namespace" \
+  --query "[?roleDefinitionName=='Azure Event Hubs Data Sender']"
+
+# If missing, create role assignment
+az role assignment create \
+  --assignee $PRINCIPAL_ID \
+  --role "Azure Event Hubs Data Sender" \
+  --scope "/subscriptions/{sub-id}/resourceGroups/your-rg/providers/Microsoft.EventHub/namespaces/your-eh-namespace"
+
+# Wait 30 minutes for propagation
+```
+
+## 12. Rollback Procedures
+
+### 12.1 Code Rollback
+
+```bash
+# List deployment history
+az functionapp deployment list \
+  --name func-aad-export-prod \
+  --resource-group your-rg
+
+# Rollback to previous deployment
+az functionapp deployment source show \
+  --name func-aad-export-prod \
+  --resource-group your-rg \
+  --deployment-id {previous-id}
+```
+
+### 12.2 Infrastructure Rollback
+
+```bash
+# List deployment history
+az deployment group list \
+  --resource-group your-rg \
+  --query "[].{name:name, timestamp:properties.timestamp, state:properties.provisioningState}"
+
+# Redeploy previous version
+az deployment group create \
+  --resource-group your-rg \
+  --template-file backup/main-previous.bicep \
+  --parameters @backup/parameters-previous.json
+```
+
+## 13. Decommissioning
+
+### 13.1 Disable Function
+
+```bash
+# Stop Function App
+az functionapp stop \
+  --name func-aad-export-prod \
+  --resource-group your-rg
+```
+
+### 13.2 Remove Resources
+
+```bash
+# Delete Function App
+az functionapp delete \
+  --name func-aad-export-prod \
+  --resource-group your-rg
+
+# Delete supporting resources
+az resource delete \
+  --ids $(az resource list \
+    --resource-group your-rg \
+    --query "[?tags.project=='aad-export'].id" -o tsv)
+```
+
+### 13.3 Revoke Permissions
+
+```bash
+# Remove Graph API permissions
+# (Manual step in Azure Portal → Enterprise Applications)
+
+# Remove Event Hub role assignment
+az role assignment delete \
+  --assignee $PRINCIPAL_ID \
+  --role "Azure Event Hubs Data Sender" \
+  --scope "/subscriptions/{sub-id}/resourceGroups/your-rg/providers/Microsoft.EventHub/namespaces/your-eh-namespace"
+```
+
+## 14. Deployment Checklist
+
+### Pre-Deployment
+
 - [ ] Azure subscription access confirmed
 - [ ] Resource group created
-- [ ] Managed identity created with proper permissions
+- [ ] User-assigned managed identity created
+- [ ] Graph API permissions granted and consented
 - [ ] Event Hub namespace and hub created
-- [ ] Application Insights workspace ready
+- [ ] Event Hub role assignment created
+- [ ] Parameters file configured
+- [ ] Bicep template validated
 
-### **Deployment**
-- [ ] Infrastructure deployed via Bicep templates
-- [ ] Managed identity Graph API permissions assigned
-- [ ] Event Hub permissions configured
-- [ ] Function code deployed successfully
-- [ ] Application settings configured
+### Deployment
 
-### **Post-Deployment**
-- [ ] HTTP trigger test successful
-- [ ] Timer trigger schedule verified
-- [ ] Event Hub message flow confirmed
-- [ ] Application Insights telemetry working
-- [ ] Monitoring alerts configured
-- [ ] Documentation updated
+- [ ] Infrastructure deployed successfully
+- [ ] Function App running
+- [ ] Application Insights operational
+- [ ] Code deployed to Function App
+- [ ] Environment variables verified
 
-### **Go-Live**
-- [ ] Production environment validated
-- [ ] Monitoring dashboards created
-- [ ] Alert notifications configured
-- [ ] Support team notified
-- [ ] Rollback plan documented
+### Post-Deployment
 
----
+- [ ] HTTP trigger tested successfully
+- [ ] Timer trigger schedule confirmed
+- [ ] Module loading verified
+- [ ] Event Hub message delivery confirmed
+- [ ] Application Insights telemetry visible
+- [ ] Alert rules configured
+- [ ] Documentation updated with environment details
 
-## 📞 **Support & Maintenance**
+### Production Readiness
 
-### **Key Contacts**
-- **Development Team**: [Your team contact]
-- **Azure Support**: [Support case process]
-- **On-Call**: [Emergency contact procedure]
+- [ ] Security hardening applied
+- [ ] Monitoring dashboard created
+- [ ] Backup procedures documented
+- [ ] Disaster recovery plan defined
+- [ ] Runbooks created for operations team
+- [ ] Performance baseline established
 
-### **Emergency Procedures**
-1. **Function App Failure**: Stop function, check logs, restore from backup
-2. **Data Quality Issues**: Verify Graph API responses, check Event Hub delivery
-3. **Performance Degradation**: Review Application Insights, scale resources if needed
+## 15. Version History
 
----
-
-*This deployment guide ensures consistent, repeatable deployments across all environments while maintaining enterprise security and monitoring standards.*
+| Version | Date       | Changes                  |
+| ------- | ---------- | ------------------------ |
+| 1.0     | 2025-10-01 | Initial deployment guide |

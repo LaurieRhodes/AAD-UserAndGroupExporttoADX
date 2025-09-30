@@ -29,14 +29,14 @@ This document describes the parameters used in the Bicep deployment files and ho
 
 ### `storageAccountName`
 
-- **Description**: The name of the Azure Storage Account.
+- **Description**: The name of the Azure Storage Account used by the Function App.
 - **Type**: `string`
 - **Example**: `"userandgroupexport111"`
 - **Customization**: Provide a unique name for your Storage Account. This name must be globally unique within Azure and follow the naming conventions for storage accounts.
 
 ### `applicationInsightsName`
 
-- **Description**: The name of the Application Insights resource.
+- **Description**: The name of the Application Insights resource used by the Function App.
 - **Type**: `string`
 - **Example**: `"userandgroupexporttoadx"`
 - **Customization**: Provide a unique name for your Application Insights resource. This name must be unique within your Azure subscription.
